@@ -169,7 +169,6 @@ class TwoFAViewDBTests(APITestCase):
 
         otp_lock_hash = generate_hash_key(self.user.id)
         otp_lock_key = f"pre-auth-otp-cooldown:{otp_lock_hash}"
-        cache.set(otp_lock_key, True, timeout=settings.OTP_COOLDOWN_TTL)
 
         pre_auth_hashed_key = generate_hash_key(self.valid_payload["pre_auth_token"])
         pre_auth_key = f"pre-auth-otp:{pre_auth_hashed_key}"
