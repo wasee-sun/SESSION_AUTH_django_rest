@@ -789,8 +789,7 @@ class TwoFAView(APIView):
 
             token_res_serializer.is_valid(raise_exception=True)
 
-            hashed_key = generate_hash_key(req_validated_data["pre_auth_token"])
-            cache.delete(f"pre-auth-otp:{hashed_key}")
+            cache.delete(f"pre-auth-otp:{otp_verification["hashed_key"]}")
 
             return Response(token_res_serializer.data, status=status.HTTP_200_OK)
         except Exception as e:  # pylint: disable=W0718

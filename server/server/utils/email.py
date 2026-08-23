@@ -76,7 +76,7 @@ class Email:
             "action_button_text": action_button_text,
         }
 
-        dispatch_email.delay(email_context)
+        dispatch_email.delay(email_context, "emails/security_email.html")
 
     def send_otp_email(self, prefix):
         """

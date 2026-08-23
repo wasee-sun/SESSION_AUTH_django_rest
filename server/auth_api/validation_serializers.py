@@ -103,6 +103,33 @@ class ValidUserLoginSerializer(serializers.Serializer):  # pylint: disable=W0223
         return attrs
 
 
+class ValidUserIDSerializer(serializers.Serializer):  # pylint: disable=W0223
+    """
+    Gets a user using user_id and validates if provided via context against rules.
+    """
+
+    def validate(self, attrs):
+        user_id = self.context.get("user_id")
+        endpoint = self.context.get("endpoint")
+        validate = self.context.get("validate")
+
+        User = get_user_model()
+
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist as exc:
+            raise NotFoundValidationError({"error": "User does not exist"}) from exc
+
+        if validate:
+            error = validate_user_attributes(user, endpoint)
+
+            if error:
+                raise ForbiddenValidationError({"error": error})
+
+        attrs["user"] = user
+        return attrs
+
+
 class ValidUserSerializer(serializers.Serializer):  # pylint: disable=W0223
     """
     Validates an user object provided via context against rules.
