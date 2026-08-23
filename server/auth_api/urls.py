@@ -20,4 +20,9 @@ urlpatterns = [
         views.RequestChangePasswordView.as_view(),
         name="req-change-password",
     ),
+    path(
+        "change-password/",
+        views.ChangePasswordView.as_view(),
+        name="change-password",
+    ),
 ]

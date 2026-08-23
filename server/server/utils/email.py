@@ -46,13 +46,10 @@ class Email:
         return {"error": None}
 
     @classmethod
-    def __verify_security_link(cls, user_id, decrypted_data):
+    def __verify_security_link(cls, decrypted_data):
         """Verify the security link given by the user."""
         if time.time() - decrypted_data["created_at"] > settings.LINK_EXPIRY_TTL:
-            return {"error": "Link expired"}
-
-        if user_id != decrypted_data["user_id"]:
-            return {"error": "Invalid link"}
+            return {"error": "The link has expired. Please request a new one."}
 
         return {"error": None}
 
@@ -136,7 +133,7 @@ class Email:
         return token
 
     @classmethod
-    def verification(cls, prefix, token, user_otp=None, user_id=None):
+    def verification(cls, prefix, token, user_otp=None):
         """
         Verify the OTP or security link given by the user.
         Decrypts the minimal cache payload using a custom key.
@@ -154,7 +151,7 @@ class Email:
             invalid_otp_key = f"invalid-otp:{hashed_key}"
             verify_obj = cls.__verify_otp(user_otp, invalid_otp_key, decrypted_data)
         else:
-            verify_obj = cls.__verify_security_link(user_id, decrypted_data)
+            verify_obj = cls.__verify_security_link(decrypted_data)
 
         if verify_obj["error"]:
             return verify_obj
@@ -163,5 +160,6 @@ class Email:
         cache.delete(f"{prefix}-cooldown:{user_lock_key}")
 
         return {
+            "hashed_key": hashed_key,
             "user_id": decrypted_data["user_id"],
         }

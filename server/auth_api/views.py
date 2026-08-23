@@ -43,7 +43,11 @@ from .throttles import (
     ResetPasswordCooldownThrottle,
 )
 from .serializers import FCMTokenSerializer
-from .validation_serializers import ValidUserLoginSerializer, ValidUserSerializer
+from .validation_serializers import (
+    ValidUserLoginSerializer,
+    ValidUserSerializer,
+    ValidPasswordSerializer,
+)
 from .request_serializers import (
     RecaptchaRequestSerializer,
     LoginRequestSerializer,
@@ -52,6 +56,8 @@ from .request_serializers import (
     FCMTokenRequestSerializer,
     ResendOTPRequestSerializer,
     ReqChangePassRequestSerializer,
+    ChangePassRequestSerializer,
+    ChangePassOpenAPIRequestSerializer,
 )
 from .response_serializers import (
     CSRFTokenResponseSerializer,
@@ -789,7 +795,7 @@ class TwoFAView(APIView):
 
             token_res_serializer.is_valid(raise_exception=True)
 
-            cache.delete(f"pre-auth-otp:{otp_verification["hashed_key"]}")
+            cache.delete(f"pre-auth-otp:{otp_verification['hashed_key']}")
 
             return Response(token_res_serializer.data, status=status.HTTP_200_OK)
         except Exception as e:  # pylint: disable=W0718
@@ -1285,9 +1291,9 @@ class FCMTokenView(APIView):
 
             req_serializer.is_valid(raise_exception=True)
 
-            validated_data = req_serializer.validated_data
+            req_validated_data = req_serializer.validated_data
 
-            fcm_token = validated_data["fcm_token"]
+            fcm_token = req_validated_data["fcm_token"]
 
             res_serializer = FCMTokenSerializer(
                 data={"token": fcm_token}, context={"user": request.user}
@@ -1743,7 +1749,191 @@ class RequestChangePasswordView(APIView):
                 ),
             ):
                 raise e
-            logger.error("Login failed: %s", str(e))
+            logger.error("Password change request failed: %s", str(e))
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ChangePasswordView(APIView):
+    """Change Password View."""
+
+    permission_classes = [AllowAny]
+    renderer_classes = [ViewRenderer]
+
+    @extend_schema(
+        summary="Change Password",
+        description=(
+            "Validates the temporary pass_token and updates the user's "
+            "password after verifying matching passwords and complexity rules."
+        ),
+        request=ChangePassOpenAPIRequestSerializer,
+        tags=["Authentication"],
+        responses={
+            status.HTTP_200_OK: OpenApiResponse(
+                response=SuccessResponseSerializer,
+                description="Password successfully changed",
+            ),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Bad Request - Invalid request parameters",
+            ),
+            status.HTTP_403_FORBIDDEN: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Forbidden - Invalid or expired tokens",
+            ),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Internal Server Error.",
+            ),
+        },
+        examples=[
+            OpenApiExample(
+                name="Change Password Request Example",
+                request_only=True,
+                value={
+                    "pass_token": "kdslfjs0f9ujse8fhse8fs-PRE-AUTH-TOKEN",
+                    "password": "StrongPassword123!",
+                    "c_password": "StrongPassword123!",
+                },
+            ),
+            OpenApiExample(
+                name="Change Password Success",
+                response_only=True,
+                status_codes=["200"],
+                value={"success": "Your password has been changed successfully."},
+            ),
+            OpenApiExample(
+                name="Missing Pass Token",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"pass_token": ["Token is required."]}},
+            ),
+            OpenApiExample(
+                name="Missing Password",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"password": ["Password is required."]}},
+            ),
+            OpenApiExample(
+                name="Missing Confirm Password",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"c_password": ["Confirm Password is required."]}},
+            ),
+            OpenApiExample(
+                name="Password Mismatch",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"c_password": ["Passwords do not match."]}},
+            ),
+            OpenApiExample(
+                name="Weak Password Complexity Failures",
+                description=(
+                    "Returns one or multiple custom complexity rule "
+                    "violations depending on which criteria failed."
+                ),
+                response_only=True,
+                status_codes=["400"],
+                value={
+                    "error": {
+                        "password": [
+                            "Password must be at least 8 characters.",
+                            "Password must contain at least one uppercase letter.",
+                            "Password must contain at least one lowercase letter.",
+                            "Password must contain at least one number.",
+                            "Password must contain at least one special character.",
+                        ]
+                    }
+                },
+            ),
+            OpenApiExample(
+                name="User Attribute Similarity Failure",
+                response_only=True,
+                status_codes=["400"],
+                value={
+                    "error": {
+                        "password": ["The password is too similar to the username."]
+                    }
+                },
+            ),
+            OpenApiExample(
+                name="Common Password Failure",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"password": ["This password is too common."]}},
+            ),
+            OpenApiExample(
+                name="Numeric Password Failure",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"password": ["This password is entirely numeric."]}},
+            ),
+            OpenApiExample(
+                name="Invalid Token",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "Invalid Token"},
+            ),
+            OpenApiExample(
+                name="Expired Token",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "The link has expired. Please request a new one."},
+            ),
+            OpenApiExample(
+                name="Internal Server Error",
+                response_only=True,
+                status_codes=["500"],
+                value={"error": "Internal Server Error"},
+            ),
+        ],
+    )
+    @method_decorator(csrf_protect)
+    def post(self, request, *args, **kwargs):
+        """Post a request to change password. Validates the incoming token and passwords."""
+        try:
+            req_serializer = ChangePassRequestSerializer(data=request.data)
+
+            req_serializer.is_valid(raise_exception=True)
+
+            req_validated_data = req_serializer.validated_data
+
+            pass_token = req_validated_data["pass_token"]
+
+            link_verification = Email.verification(
+                prefix="change-password",
+                token=pass_token,
+            )
+
+            if link_verification.get("error"):
+                raise ForbiddenValidationError({"error": link_verification["error"]})
+
+            user_id = link_verification["user_id"]
+
+            user = get_user_model().objects.get(id=user_id)
+
+            valid_serializer = ValidPasswordSerializer(
+                data=request.data, context={"user": user}
+            )
+
+            valid_serializer.is_valid(raise_exception=True)
+
+            validated_password = valid_serializer.validated_data["password"]
+
+            user.set_password(validated_password)
+            user.save()
+
+            cache.delete(f"change-password:{link_verification['hashed_key']}")
+
+            return Response(
+                {"success": "Your password has been changed successfully."},
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:  # pylint: disable=W0718
+            if isinstance(e, (ValidationError, ForbiddenValidationError)):
+                raise e
+            logger.error("Password change failed: %s", str(e))
             return Response(
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
