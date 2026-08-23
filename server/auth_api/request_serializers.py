@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from server.schema_serializers import BaseRecaptchaSerializer
+from .validation_serializers import ValidPasswordSerializer
 
 
 class RecaptchaRequestSerializer(BaseRecaptchaSerializer):  # pylint: disable=W0223
@@ -180,3 +181,29 @@ class ReqChangePassRequestSerializer(BaseRecaptchaSerializer):  # pylint: disabl
         },
     )
     # pylint: enable=R0801
+
+
+class ChangePassRequestSerializer(serializers.Serializer):  # pylint: disable=W0223
+    """
+    Handles Change Password credentials.
+    """
+
+    # pylint: disable=R0801
+    pass_token = serializers.CharField(
+        required=True,
+        allow_null=False,
+        allow_blank=False,
+        help_text="The raw password token to be used in subsequent requests.",
+        error_messages={
+            "required": "Token is required.",
+            "blank": "Token is required.",
+            "null": "Token is required.",
+        },
+    )
+    # pylint: enable=R0801
+
+
+class ChangePassOpenAPIRequestSerializer(
+    ChangePassRequestSerializer, ValidPasswordSerializer
+):  # pylint: disable=W0223
+    """Combined serializer for OpenAPI request body documentation."""
