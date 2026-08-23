@@ -90,13 +90,13 @@ def dispatch_fcm_notification(self, user_id, title, body, data=None):
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5)
-def dispatch_email(self, email_context):
+def dispatch_email(self, email_context, email_template):
     """
     Accepts a plain dictionary containing email context data.
     Send HTML emails asynchronously.
     """
     try:
-        html_content = render_to_string("emails/security_email.html", email_context)
+        html_content = render_to_string(email_template, email_context)
         text_content = strip_tags(html_content)
 
         msg = EmailMultiAlternatives(

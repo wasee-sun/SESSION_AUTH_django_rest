@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from server.schema_serializers import SuccessBoolResponseSerializer
 
 
 class CSRFTokenResponseSerializer(serializers.Serializer):  # pylint: disable=W0223
@@ -15,6 +16,7 @@ class CSRFTokenResponseSerializer(serializers.Serializer):  # pylint: disable=W0
             "null": "CSRF token is required.",
         },
     )
+
     csrf_token_expiry = serializers.DateTimeField(
         required=True,
         allow_null=False,
@@ -27,17 +29,9 @@ class CSRFTokenResponseSerializer(serializers.Serializer):  # pylint: disable=W0
     )
 
 
-class OTPResponseSerializer(serializers.Serializer):  # pylint: disable=W0223
-    success = serializers.BooleanField(
-        required=True,
-        allow_null=False,
-        help_text="A boolean value indicating the success of the operation.",
-        error_messages={
-            "required": "Success value is required.",
-            "null": "Success value is required.",
-            "invalid": "Success value is invalid.",
-        },
-    )
+class OTPResponseSerializer(SuccessBoolResponseSerializer):  # pylint: disable=W0223
+    """OTP response structure."""
+
     pre_auth_token = serializers.CharField(
         required=True,
         allow_null=False,
@@ -52,6 +46,8 @@ class OTPResponseSerializer(serializers.Serializer):  # pylint: disable=W0223
 
 
 class SessionResponseSerializer(CSRFTokenResponseSerializer):  # pylint: disable=W0223
+    """Session response structure."""
+
     sessionid = serializers.CharField(
         required=True,
         allow_null=False,
@@ -63,6 +59,7 @@ class SessionResponseSerializer(CSRFTokenResponseSerializer):  # pylint: disable
             "null": "Session ID is required.",
         },
     )
+
     session_expiry = serializers.DateTimeField(
         required=True,
         allow_null=False,
@@ -73,6 +70,7 @@ class SessionResponseSerializer(CSRFTokenResponseSerializer):  # pylint: disable
             "invalid": "Session token expiry is invalid.",
         },
     )
+
     user_role = serializers.CharField(
         required=True,
         allow_null=False,
@@ -84,6 +82,7 @@ class SessionResponseSerializer(CSRFTokenResponseSerializer):  # pylint: disable
             "null": "User role is required.",
         },
     )
+
     user_id = serializers.IntegerField(
         required=True,
         allow_null=False,
@@ -92,5 +91,23 @@ class SessionResponseSerializer(CSRFTokenResponseSerializer):  # pylint: disable
             "required": "User ID is required.",
             "null": "User ID is required.",
             "invalid": "User ID is invalid.",
+        },
+    )
+
+
+class ReqChangePassResponseSerializer(
+    SuccessBoolResponseSerializer
+):  # pylint: disable=W0223
+    """Request Change Password response structure."""
+
+    pass_token = serializers.CharField(
+        required=True,
+        allow_null=False,
+        allow_blank=False,
+        help_text="The raw password token to be used in subsequent requests.",
+        error_messages={
+            "required": "Raw password token is required.",
+            "blank": "Raw password token is required.",
+            "null": "Raw password token is required.",
         },
     )

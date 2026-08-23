@@ -61,7 +61,8 @@ class OTPCooldownThrottle(BaseThrottle):
         )
 
         if pre_auth_token:
-            cache_data = get_cache_data("pre-auth-otp", pre_auth_token)
+            clean_input = str(pre_auth_token).strip()
+            cache_data = get_cache_data("pre-auth-otp", clean_input)
 
             if cache_data.get("error"):
                 return True  # reCAPTCHA will handle this
@@ -111,6 +112,46 @@ class TwoFACooldownThrottle(BaseThrottle):
                 and invalid_otp_times >= settings.MAX_OTP_FAILURE_LIMIT
             ):
                 self.remaining_ttl = calculate_remaining_ttl(invalid_otp_key)
+                return False
+
+        return True
+
+    def wait(self):
+        """
+        Return the number of seconds to wait for the next request.
+        """
+        return self.remaining_ttl
+
+
+class ResetPasswordCooldownThrottle(BaseThrottle):
+    def __init__(self):
+        self.remaining_ttl = settings.LINK_COOLDOWN_TTL
+
+    def allow_request(self, request, view):  # pylint: disable=R0911
+        """
+        Return `True` if the request should be allowed, `False` otherwise.
+        """
+
+        password_change_input = (
+            request.data.get("email_or_username")
+            if isinstance(request.data, dict)
+            else None
+        )
+
+        if password_change_input:
+            try:
+                clean_input = str(password_change_input).strip()
+                user = User.objects.only("id").get(
+                    Q(email__exact=clean_input.lower()) | Q(username__exact=clean_input)
+                )
+            except User.DoesNotExist:
+                return True  # reCAPTCHA will handle this
+
+            user_lock_key = generate_hash_key(user.id)
+            user_cache_key = f"change-password-cooldown:{user_lock_key}"
+
+            if cache.get(user_cache_key):
+                self.remaining_ttl = calculate_remaining_ttl(user_cache_key)
                 return False
 
         return True

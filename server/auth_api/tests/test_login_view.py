@@ -376,12 +376,12 @@ class LoginViewDBTests(APITestCase):
         user_lock_hash = generate_hash_key(self.user.id)
         user_lock_key = f"pre-auth-otp-cooldown:{user_lock_hash}"
 
-        response = self.client.post(
+        response1 = self.client.post(
             self.url, self.valid_payload, format="json", **self.headers
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn("pre_auth_token", response.data)
+        self.assertEqual(response1.status_code, status.HTTP_200_OK)
+        self.assertIn("pre_auth_token", response1.data)
         self.assertTrue(cache.get(user_lock_key))
         self.assertIsNone(cache.get(login_failure_key))
         self.assertIsNone(cache.get(dummy_key))
@@ -394,11 +394,23 @@ class LoginViewDBTests(APITestCase):
         self.assertEqual(email_context["username"], self.user.username)
         self.assertIsNotNone(email_context["otp_code"])
 
+        cache.delete(user_lock_key)
+
+        self.valid_payload["email_or_username"] = "defaultuser"
+
+        response2 = self.client.post(
+            self.url, self.valid_payload, format="json", **self.headers
+        )
+
+        self.assertEqual(response2.status_code, status.HTTP_200_OK)
+        self.assertIn("pre_auth_token", response2.data)
+        self.assertTrue(cache.get(user_lock_key))
+
     @patch(
         "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
     )
     def test_login_with_2fa_disabled_success(self, mock_recaptcha):
-        """Test that a user with 2FA disabled directly receives JWT access/refresh tokens and resets failure cache."""
+        """Test that a user with 2FA disabled directly receives Session tokens and resets failure cache."""
         mock_recaptcha.return_value.create_assessment.return_value = (
             self.create_mock_recaptcha_response()
         )
@@ -416,11 +428,11 @@ class LoginViewDBTests(APITestCase):
         user_lock_hash = generate_hash_key(self.user.id)
         user_lock_key = f"pre-auth-otp-cooldown:{user_lock_hash}"
 
-        response = self.client.post(
+        response1 = self.client.post(
             self.url, self.valid_payload, format="json", **self.headers
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response1.status_code, status.HTTP_200_OK)
 
         expected_keys = [
             "sessionid",
@@ -431,13 +443,26 @@ class LoginViewDBTests(APITestCase):
             "csrf_token_expiry",
         ]
         for key in expected_keys:
-            self.assertIn(key, response.data)
-            self.assertIsNotNone(response.data[key])
+            self.assertIn(key, response1.data)
+            self.assertIsNotNone(response1.data[key])
 
-        self.assertEqual(response.data["user_id"], self.user.id)
+        self.assertEqual(response1.data["user_id"], self.user.id)
         self.assertIsNone(cache.get(login_failure_key))
         self.assertIsNone(cache.get(user_lock_key))
         self.assertIsNone(cache.get(dummy_key))
+
+        cache.delete(user_lock_key)
+
+        self.valid_payload["email_or_username"] = "defaultuser"
+        self.headers["HTTP_X_CSRFTOKEN"] = response1.data["csrf_token"]
+
+        response2 = self.client.post(
+            self.url, self.valid_payload, format="json", **self.headers
+        )
+
+        self.assertEqual(response2.status_code, status.HTTP_200_OK)
+        self.assertIn("user_id", response2.data)
+        self.assertIsNone(cache.get(user_lock_key))
 
     # ==========================================
     # AUTHENTICATED USER STATE VALIDATION (403)
@@ -447,7 +472,7 @@ class LoginViewDBTests(APITestCase):
         "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
     )
     def test_login_wrong_auth_provider_fails(self, mock_recaptcha):
-        """Test 400 bad request when an OAuth user (e.g., Google) attempts a password login."""
+        """Test 403 forbidden request when an OAuth user (e.g., Google) attempts a password login."""
         mock_recaptcha.return_value.create_assessment.return_value = (
             self.create_mock_recaptcha_response()
         )
@@ -470,7 +495,7 @@ class LoginViewDBTests(APITestCase):
         "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
     )
     def test_login_unverified_email_fails(self, mock_recaptcha):
-        """Test 400 bad request when user has not verified their email address."""
+        """Test 403 forbidden request when user has not verified their email address."""
         mock_recaptcha.return_value.create_assessment.return_value = (
             self.create_mock_recaptcha_response()
         )
@@ -493,7 +518,7 @@ class LoginViewDBTests(APITestCase):
         "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
     )
     def test_login_deactivated_user_fails(self, mock_recaptcha):
-        """Test 400 bad request when an explicitly deactivated user tries to log in."""
+        """Test 403 forbidden when an explicitly deactivated user tries to log in."""
         mock_recaptcha.return_value.create_assessment.return_value = (
             self.create_mock_recaptcha_response()
         )

@@ -23,7 +23,11 @@ from drf_spectacular.utils import (
 )
 
 from server.renderers import ViewRenderer
-from server.utils.exception import BadRequestValidationError, ForbiddenValidationError
+from server.utils.exception import (
+    BadRequestValidationError,
+    ForbiddenValidationError,
+    NotFoundValidationError,
+)
 from server.utils.email import Email
 from server.utils.recaptcha import verify_recaptcha_token
 from server.utils.redis import get_cache_data
@@ -33,9 +37,17 @@ from server.schema_serializers import (
     ErrorResponseSerializer,
 )
 from .utils import get_user_role
-from .throttles import OTPCooldownThrottle, TwoFACooldownThrottle
+from .throttles import (
+    OTPCooldownThrottle,
+    TwoFACooldownThrottle,
+    ResetPasswordCooldownThrottle,
+)
 from .serializers import FCMTokenSerializer
-from .validation_serializers import ValidUserSerializer
+from .validation_serializers import (
+    ValidUserLoginSerializer,
+    ValidUserSerializer,
+    ValidPasswordSerializer,
+)
 from .request_serializers import (
     RecaptchaRequestSerializer,
     LoginRequestSerializer,
@@ -43,11 +55,15 @@ from .request_serializers import (
     SocialLoginRequestSerializer,
     FCMTokenRequestSerializer,
     ResendOTPRequestSerializer,
+    ReqChangePassRequestSerializer,
+    ChangePassRequestSerializer,
+    ChangePassOpenAPIRequestSerializer,
 )
 from .response_serializers import (
     CSRFTokenResponseSerializer,
     OTPResponseSerializer,
     SessionResponseSerializer,
+    ReqChangePassResponseSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -237,13 +253,13 @@ class RecaptchaValidationView(APIView):
         """Post a request to validate reCAPTCHA.
         Returns a response with success or error message."""
         try:
-            serializer = RecaptchaRequestSerializer(
+            req_serializer = RecaptchaRequestSerializer(
                 data=request.data, context={"request": request}
             )
 
-            serializer.is_valid(raise_exception=True)
+            req_serializer.is_valid(raise_exception=True)
 
-            validated_data = serializer.validated_data
+            validated_data = req_serializer.validated_data
 
             is_human, message = verify_recaptcha_token(
                 token=validated_data["recaptcha_token"],
@@ -254,14 +270,17 @@ class RecaptchaValidationView(APIView):
             )
 
             if not is_human:
-                return Response({"error": message}, status=status.HTTP_403_FORBIDDEN)
+                raise ForbiddenValidationError({"error": message})
 
             return Response(
                 {"success": message},
                 status=status.HTTP_200_OK,
             )
         except Exception as e:  # pylint: disable=W0718
-            if isinstance(e, (ValidationError, BadRequestValidationError)):
+            if isinstance(
+                e,
+                (ValidationError, BadRequestValidationError, ForbiddenValidationError),
+            ):
                 raise e
             logger.error("Error validating reCAPTCHA: %s", str(e))
             return Response(
@@ -335,7 +354,7 @@ class LoginView(APIView):
                 name="Superuser Login Request Example",
                 request_only=True,
                 value={
-                    "email": "superuser@example.com",
+                    "email_or_username": "superuser@example.com",
                     "password": "Django@123",
                     "recaptcha_token": "03AFcWeA7V_u-R8N_m7N1wXzO3K7L-reCAPTCHA-TOKEN",
                     "recaptcha_version": "v3",
@@ -345,7 +364,7 @@ class LoginView(APIView):
                 name="Staff Login Request Example",
                 request_only=True,
                 value={
-                    "email": "staffuser@example.com",
+                    "email_or_username": "staffuser@example.com",
                     "password": "Django@123",
                     "recaptcha_token": "03AFcWeA7V_u-R8N_m7N1wXzO3K7L-reCAPTCHA-TOKEN",
                     "recaptcha_version": "v3",
@@ -355,7 +374,7 @@ class LoginView(APIView):
                 name="Default User Login Request Example",
                 request_only=True,
                 value={
-                    "email": "defaultuser@example.com",
+                    "email_or_username": "defaultuser@example.com",
                     "password": "Django@123",
                     "recaptcha_token": "03AFcWeA7V_u-R8N_m7N1wXzO3K7L-reCAPTCHA-TOKEN",
                     "recaptcha_version": "v3",
@@ -529,10 +548,7 @@ class LoginView(APIView):
             )
 
             if not is_human:
-                return Response(
-                    {"error": message},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise ForbiddenValidationError({"error": message})
 
             user = authenticate(
                 request=request,
@@ -540,7 +556,7 @@ class LoginView(APIView):
                 password=req_validated_data["password"],
             )
 
-            valid_serializer = ValidUserSerializer(
+            valid_serializer = ValidUserLoginSerializer(
                 data={}, context={"user": user, "request": request}
             )
 
@@ -745,10 +761,7 @@ class TwoFAView(APIView):
             )
 
             if otp_verification.get("error"):
-                return Response(
-                    {"error": otp_verification["error"]},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise ForbiddenValidationError({"error": otp_verification["error"]})
 
             user_id = otp_verification["user_id"]
 
@@ -782,12 +795,11 @@ class TwoFAView(APIView):
 
             token_res_serializer.is_valid(raise_exception=True)
 
-            hashed_key = generate_hash_key(req_validated_data["pre_auth_token"])
-            cache.delete(f"pre-auth-otp:{hashed_key}")
+            cache.delete(f"pre-auth-otp:{otp_verification['hashed_key']}")
 
             return Response(token_res_serializer.data, status=status.HTTP_200_OK)
         except Exception as e:  # pylint: disable=W0718
-            if isinstance(e, ValidationError):
+            if isinstance(e, (ValidationError, ForbiddenValidationError)):
                 raise e
             logger.error("TwoFA failed: %s", str(e))
             return Response(
@@ -1053,10 +1065,10 @@ class SocialLoginView(APIView):
     def post(self, request, *args, **kwargs):  # pylint: disable=R0914
         """Post a request to social login. Returns SessionID to the registered email."""
         try:
-            req_serializer = SocialLoginRequestSerializer(
-                data=request.data, context={"request": request}
-            )
+            req_serializer = SocialLoginRequestSerializer(data=request.data)
+
             req_serializer.is_valid(raise_exception=True)
+
             validated_data = req_serializer.validated_data
 
             provider_name = validated_data["provider"]
@@ -1082,9 +1094,8 @@ class SocialLoginView(APIView):
             user = backend.auth_complete()
 
             if not user:
-                return Response(
-                    {"error": "Authentication error. User not found"},
-                    status=status.HTTP_404_NOT_FOUND,
+                raise NotFoundValidationError(
+                    {"error": "Authentication error. User not found"}
                 )
 
             hashed_user_key = generate_hash_key(user.id)
@@ -1120,7 +1131,9 @@ class SocialLoginView(APIView):
 
             return Response(token_res_serializer.data, status=status.HTTP_200_OK)
         except Exception as e:  # pylint: disable=W0718
-            if isinstance(e, (ValidationError, ForbiddenValidationError)):
+            if isinstance(
+                e, (ValidationError, ForbiddenValidationError, NotFoundValidationError)
+            ):
                 raise e
             logger.error("Social authentication failed: %s", str(e))
             if isinstance(e, AuthException):
@@ -1274,17 +1287,18 @@ class FCMTokenView(APIView):
     def post(self, request, *args, **kwargs):
         """Register a FCM token in the database."""
         try:
-            req_serializer = FCMTokenRequestSerializer(
-                data=request.data, context={"request": request}
-            )
-            req_serializer.is_valid(raise_exception=True)
-            validated_data = req_serializer.validated_data
+            req_serializer = FCMTokenRequestSerializer(data=request.data)
 
-            fcm_token = validated_data["fcm_token"]
+            req_serializer.is_valid(raise_exception=True)
+
+            req_validated_data = req_serializer.validated_data
+
+            fcm_token = req_validated_data["fcm_token"]
 
             res_serializer = FCMTokenSerializer(
                 data={"token": fcm_token}, context={"user": request.user}
             )
+
             res_serializer.is_valid(raise_exception=True)
             res_serializer.save()
 
@@ -1464,20 +1478,14 @@ class ResendOTPView(APIView):
             )
 
             if not is_human:
-                return Response(
-                    {"error": message},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise ForbiddenValidationError({"error": message})
 
             cache_data = get_cache_data(
                 "pre-auth-otp", req_validated_data["pre_auth_token"]
             )
 
             if cache_data.get("error"):
-                return Response(
-                    {"error": cache_data["error"]},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise ForbiddenValidationError({"error": cache_data["error"]})
 
             hashed_key = cache_data["hashed_key"]
             decrypted_data = cache_data["decrypted_data"]
@@ -1508,6 +1516,424 @@ class ResendOTPView(APIView):
             ):
                 raise e
             logger.error("Resend OTP failed: %s", str(e))
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class RequestChangePasswordView(APIView):
+    """Request Change Password View."""
+
+    permission_classes = [AllowAny]
+    renderer_classes = [ViewRenderer]
+    throttle_classes = [ResetPasswordCooldownThrottle]
+
+    def handle_exception(self, exc):
+        if isinstance(exc, Throttled):
+            return Response(
+                {
+                    "error": (
+                        f"Please wait {exc.wait} seconds before"
+                        " requesting another OTP."
+                    )
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        return super().handle_exception(exc)
+
+    @extend_schema(
+        summary="Request Change Password",
+        description=(
+            "Request to change password granted by email or username. Handles reCAPTCHA mitigation,"
+            " brute-force account tracking thresholds, and multi-factor conditional logic. "
+            "Issues an new active temporary pass_token state payload. "
+        ),
+        request=ReqChangePassRequestSerializer,
+        tags=["Authentication"],
+        responses={
+            status.HTTP_200_OK: OpenApiResponse(
+                response=ReqChangePassResponseSerializer,
+                description="Return Password Token",
+            ),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Bad Request - Invalid request parameters",
+            ),
+            status.HTTP_403_FORBIDDEN: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Forbidden - reCAPTCHA or user validations failed",
+            ),
+            status.HTTP_404_NOT_FOUND: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Not Found - User not found",
+            ),
+            status.HTTP_429_TOO_MANY_REQUESTS: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Too Many Requests",
+            ),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Internal Server Error.",
+            ),
+        },
+        examples=[
+            OpenApiExample(
+                name="Request Change Password Example",
+                request_only=True,
+                value={
+                    "email_or_username": "defaultuser@example.com",
+                    "recaptcha_token": "03AFcWeA7V_u-R8N_m7N1wXzO3K7L-reCAPTCHA-TOKEN",
+                    "recaptcha_version": "v3",
+                },
+            ),
+            OpenApiExample(
+                name="Request Password Change Success",
+                response_only=True,
+                status_codes=["200"],
+                value={
+                    "success": "True",
+                    "pass_token": "kdslfjs0f9ujse8fhse8fs-PRE-AUTH-TOKEN",
+                },
+            ),
+            OpenApiExample(
+                name="Missing email or username",
+                response_only=True,
+                status_codes=["400"],
+                value={
+                    "error": {"email_or_username": ["Email or username is required."]}
+                },
+            ),
+            OpenApiExample(
+                name="Missing reCAPTCHA Token",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"recaptcha_token": ["Missing reCAPTCHA token."]}},
+            ),
+            OpenApiExample(
+                name="Missing reCAPTCHA Version",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"recaptcha_version": ["Missing reCAPTCHA version."]}},
+            ),
+            OpenApiExample(
+                name="Missing User Agent",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"user_agent": ["Missing User Agent Header."]}},
+            ),
+            OpenApiExample(
+                name="Missing User IP Address",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"user_ip": ["Missing User IP Address."]}},
+            ),
+            OpenApiExample(
+                name="Invalid reCAPTCHA Token",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "Invalid token reason: Invalid"},
+            ),
+            OpenApiExample(
+                name="Action Mismatch",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "Action mismatch. Expected 'login', got 'signup'"},
+            ),
+            OpenApiExample(
+                name="Low Score",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "reCAPTCHA validation failed."},
+            ),
+            OpenApiExample(
+                name="Deactivated Account Check",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "Account has been deactivated. Contact your admin"},
+            ),
+            OpenApiExample(
+                name="Unverified Email Check",
+                response_only=True,
+                status_codes=["403"],
+                value={
+                    "error": "Email is not verified. You must verify your email first"
+                },
+            ),
+            OpenApiExample(
+                name="User not found",
+                response_only=True,
+                status_codes=["404"],
+                value={"error": "User does not exist"},
+            ),
+            OpenApiExample(
+                name="Throttled Wait Penalty",
+                response_only=True,
+                status_codes=["429"],
+                value={
+                    "error": "Please wait 45 seconds before requesting another OTP."
+                },
+            ),
+            OpenApiExample(
+                name="Internal Server Error",
+                response_only=True,
+                status_codes=["500"],
+                value={"error": "Internal Server Error"},
+            ),
+        ],
+    )
+    @method_decorator(csrf_protect)
+    def post(self, request, *args, **kwargs):
+        """Post a request to change password. Sends a link to the registered email."""
+        try:
+            req_serializer = ReqChangePassRequestSerializer(
+                data=request.data, context={"request": request}
+            )
+
+            req_serializer.is_valid(raise_exception=True)
+
+            req_validated_data = req_serializer.validated_data
+
+            is_human, message = verify_recaptcha_token(
+                token=req_validated_data["recaptcha_token"],
+                expected_action="request-password-change",
+                recaptcha_version=req_validated_data["recaptcha_version"],
+                user_ip_address=req_validated_data["user_ip"],
+                user_agent=req_validated_data["user_agent"],
+            )
+
+            if not is_human:
+                raise ForbiddenValidationError({"error": message})
+
+            valid_serializer = ValidUserSerializer(
+                data={},
+                context={
+                    "email_or_username": req_validated_data["email_or_username"],
+                    "endpoint": "change-password",
+                },
+            )
+
+            valid_serializer.is_valid(raise_exception=True)
+
+            validated_user = valid_serializer.validated_data["user"]
+
+            password_change_email = Email(
+                validated_user,
+                f"{settings.APP_NAME} password change request",
+                "Change Your Password",
+                (
+                    "We received a request to change your password. "
+                    "Click the link below to set a new password:"
+                ),
+            )
+
+            pass_token = password_change_email.send_security_link_email(
+                "change-password"
+            )
+
+            res_serializer = ReqChangePassResponseSerializer(
+                data={"success": True, "pass_token": pass_token}
+            )
+
+            res_serializer.is_valid(raise_exception=True)
+
+            return Response(res_serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:  # pylint: disable=W0718
+            if isinstance(
+                e,
+                (
+                    ValidationError,
+                    BadRequestValidationError,
+                    ForbiddenValidationError,
+                    NotFoundValidationError,
+                ),
+            ):
+                raise e
+            logger.error("Password change request failed: %s", str(e))
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ChangePasswordView(APIView):
+    """Change Password View."""
+
+    permission_classes = [AllowAny]
+    renderer_classes = [ViewRenderer]
+
+    @extend_schema(
+        summary="Change Password",
+        description=(
+            "Validates the temporary pass_token and updates the user's "
+            "password after verifying matching passwords and complexity rules."
+        ),
+        request=ChangePassOpenAPIRequestSerializer,
+        tags=["Authentication"],
+        responses={
+            status.HTTP_200_OK: OpenApiResponse(
+                response=SuccessResponseSerializer,
+                description="Password successfully changed",
+            ),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Bad Request - Invalid request parameters",
+            ),
+            status.HTTP_403_FORBIDDEN: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Forbidden - Invalid or expired tokens",
+            ),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Internal Server Error.",
+            ),
+        },
+        examples=[
+            OpenApiExample(
+                name="Change Password Request Example",
+                request_only=True,
+                value={
+                    "pass_token": "kdslfjs0f9ujse8fhse8fs-PRE-AUTH-TOKEN",
+                    "password": "StrongPassword123!",
+                    "c_password": "StrongPassword123!",
+                },
+            ),
+            OpenApiExample(
+                name="Change Password Success",
+                response_only=True,
+                status_codes=["200"],
+                value={"success": "Your password has been changed successfully."},
+            ),
+            OpenApiExample(
+                name="Missing Pass Token",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"pass_token": ["Token is required."]}},
+            ),
+            OpenApiExample(
+                name="Missing Password",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"password": ["Password is required."]}},
+            ),
+            OpenApiExample(
+                name="Missing Confirm Password",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"c_password": ["Confirm Password is required."]}},
+            ),
+            OpenApiExample(
+                name="Password Mismatch",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"c_password": ["Passwords do not match."]}},
+            ),
+            OpenApiExample(
+                name="Weak Password Complexity Failures",
+                description=(
+                    "Returns one or multiple custom complexity rule "
+                    "violations depending on which criteria failed."
+                ),
+                response_only=True,
+                status_codes=["400"],
+                value={
+                    "error": {
+                        "password": [
+                            "Password must be at least 8 characters.",
+                            "Password must contain at least one uppercase letter.",
+                            "Password must contain at least one lowercase letter.",
+                            "Password must contain at least one number.",
+                            "Password must contain at least one special character.",
+                        ]
+                    }
+                },
+            ),
+            OpenApiExample(
+                name="User Attribute Similarity Failure",
+                response_only=True,
+                status_codes=["400"],
+                value={
+                    "error": {
+                        "password": ["The password is too similar to the username."]
+                    }
+                },
+            ),
+            OpenApiExample(
+                name="Common Password Failure",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"password": ["This password is too common."]}},
+            ),
+            OpenApiExample(
+                name="Numeric Password Failure",
+                response_only=True,
+                status_codes=["400"],
+                value={"error": {"password": ["This password is entirely numeric."]}},
+            ),
+            OpenApiExample(
+                name="Invalid Token",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "Invalid Token"},
+            ),
+            OpenApiExample(
+                name="Expired Token",
+                response_only=True,
+                status_codes=["403"],
+                value={"error": "The link has expired. Please request a new one."},
+            ),
+            OpenApiExample(
+                name="Internal Server Error",
+                response_only=True,
+                status_codes=["500"],
+                value={"error": "Internal Server Error"},
+            ),
+        ],
+    )
+    @method_decorator(csrf_protect)
+    def post(self, request, *args, **kwargs):
+        """Post a request to change password. Validates the incoming token and passwords."""
+        try:
+            req_serializer = ChangePassRequestSerializer(data=request.data)
+
+            req_serializer.is_valid(raise_exception=True)
+
+            req_validated_data = req_serializer.validated_data
+
+            pass_token = req_validated_data["pass_token"]
+
+            link_verification = Email.verification(
+                prefix="change-password",
+                token=pass_token,
+            )
+
+            if link_verification.get("error"):
+                raise ForbiddenValidationError({"error": link_verification["error"]})
+
+            user_id = link_verification["user_id"]
+
+            user = get_user_model().objects.get(id=user_id)
+
+            valid_serializer = ValidPasswordSerializer(
+                data=request.data, context={"user": user}
+            )
+
+            valid_serializer.is_valid(raise_exception=True)
+
+            validated_password = valid_serializer.validated_data["password"]
+
+            user.set_password(validated_password)
+            user.save()
+
+            cache.delete(f"change-password:{link_verification['hashed_key']}")
+
+            return Response(
+                {"success": "Your password has been changed successfully."},
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:  # pylint: disable=W0718
+            if isinstance(e, (ValidationError, ForbiddenValidationError)):
+                raise e
+            logger.error("Password change failed: %s", str(e))
             return Response(
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
