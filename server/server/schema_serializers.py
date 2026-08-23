@@ -18,6 +18,21 @@ class ErrorResponseSerializer(serializers.Serializer):  # pylint: disable=W0223
     )
 
 
+class SuccessBoolResponseSerializer(serializers.Serializer):  # pylint: disable=W0223
+    """Boolean success response structure."""
+
+    success = serializers.BooleanField(
+        required=True,
+        allow_null=False,
+        help_text="A boolean value indicating the success of the operation.",
+        error_messages={
+            "required": "Success value is required.",
+            "null": "Success value is required.",
+            "invalid": "Success value is invalid.",
+        },
+    )
+
+
 class BaseRecaptchaSerializer(serializers.Serializer):  # pylint: disable=W0223
     """
     Base serializer for handling reCAPTCHA tokens and request context validation.

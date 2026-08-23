@@ -171,7 +171,9 @@ class DispatchEmailTaskTestCase(TestCase):
         mock_email_class.return_value = mock_msg_instance
 
         # Execute task eagerly
-        result = dispatch_email.delay(self.valid_email_context).get()
+        result = dispatch_email.delay(
+            self.valid_email_context, "emails/security_email.html"
+        ).get()
 
         # Assert status
         self.assertEqual(result, {"status": "success"})
@@ -218,7 +220,7 @@ class DispatchEmailRetryTestCase(TestCase):
 
         # Call the task function directly
         with self.assertRaises(Retry):
-            dispatch_email(self.valid_email_context)
+            dispatch_email(self.valid_email_context, "emails/security_email.html")
 
         self.assertTrue(mock_retry.called)
 
@@ -234,7 +236,7 @@ class DispatchEmailRetryTestCase(TestCase):
         mock_retry.side_effect = MaxRetriesExceededError("SMTP failure limits exceeded")
 
         # Call task function directly
-        result = dispatch_email(self.valid_email_context)
+        result = dispatch_email(self.valid_email_context, "emails/security_email.html")
 
         self.assertEqual(
             result, {"status": "failed", "reason": "SMTP failure limits exceeded"}

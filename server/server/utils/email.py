@@ -46,13 +46,10 @@ class Email:
         return {"error": None}
 
     @classmethod
-    def __verify_security_link(cls, user_id, decrypted_data):
+    def __verify_security_link(cls, decrypted_data):
         """Verify the security link given by the user."""
         if time.time() - decrypted_data["created_at"] > settings.LINK_EXPIRY_TTL:
-            return {"error": "Link expired"}
-
-        if user_id != decrypted_data["user_id"]:
-            return {"error": "Invalid link"}
+            return {"error": "The link has expired. Please request a new one."}
 
         return {"error": None}
 
@@ -76,7 +73,7 @@ class Email:
             "action_button_text": action_button_text,
         }
 
-        dispatch_email.delay(email_context)
+        dispatch_email.delay(email_context, "emails/security_email.html")
 
     def send_otp_email(self, prefix):
         """
@@ -92,7 +89,14 @@ class Email:
             "otp": otp_code,
         }
 
-        return set_cache_data(prefix, raw_cache_obj, True, self.user.id)
+        return set_cache_data(
+            prefix,
+            raw_cache_obj,
+            True,
+            settings.PRE_AUTH_OTP_TTL,
+            self.user.id,
+            settings.OTP_COOLDOWN_TTL,
+        )
 
     def send_security_link_email(self, prefix):
         """
@@ -104,17 +108,21 @@ class Email:
             "created_at": time.time(),
         }
 
-        token = set_cache_data(prefix, raw_cache_obj, True, self.user.id)
+        token = set_cache_data(
+            prefix,
+            raw_cache_obj,
+            True,
+            settings.LINK_EXPIRY_TTL,
+            self.user.id,
+            settings.LINK_COOLDOWN_TTL,
+        )
 
         if prefix == "email-verification":
             action_url = f"{settings.FRONTEND_URL}/auth/verify-email/?{token}"
             action_button_text = "Verify Email"
-        elif prefix == "create-password":
-            action_url = f"{settings.FRONTEND_URL}/auth/create-password/?{token}"
-            action_button_text = "Create Password"
-        elif prefix == "password-reset":
-            action_url = f"{settings.FRONTEND_URL}/auth/reset-password/?{token}"
-            action_button_text = "Reset Password"
+        elif prefix == "change-password":
+            action_url = f"{settings.FRONTEND_URL}/auth/change-password/?{token}"
+            action_button_text = "Change Password"
         else:
             return "Invalid prefix"
 
@@ -125,7 +133,7 @@ class Email:
         return token
 
     @classmethod
-    def verification(cls, prefix, token, user_otp=None, user_id=None):
+    def verification(cls, prefix, token, user_otp=None):
         """
         Verify the OTP or security link given by the user.
         Decrypts the minimal cache payload using a custom key.
@@ -143,7 +151,7 @@ class Email:
             invalid_otp_key = f"invalid-otp:{hashed_key}"
             verify_obj = cls.__verify_otp(user_otp, invalid_otp_key, decrypted_data)
         else:
-            verify_obj = cls.__verify_security_link(user_id, decrypted_data)
+            verify_obj = cls.__verify_security_link(decrypted_data)
 
         if verify_obj["error"]:
             return verify_obj
@@ -152,5 +160,6 @@ class Email:
         cache.delete(f"{prefix}-cooldown:{user_lock_key}")
 
         return {
+            "hashed_key": hashed_key,
             "user_id": decrypted_data["user_id"],
         }

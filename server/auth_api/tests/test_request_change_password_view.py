@@ -7,20 +7,20 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from server.utils.encryption import generate_hash_key, encrypt_data
+from server.utils.encryption import generate_hash_key
 
 User = get_user_model()
 
 
-class ResendOTPViewTests(APITestCase):
+class ReqChangePasswordViewTests(APITestCase):
 
     def setUp(self):
         self.client = APIClient(enforce_csrf_checks=True)
 
-        self.url = reverse("resend-otp")
+        self.url = reverse("req-change-password")
 
         self.valid_payload = {
-            "pre_auth_token": "mock_pre_auth_token",
+            "email_or_username": "defaultuser@example.com",
             "recaptcha_token": "mock_token_123",
             "recaptcha_version": "v3",
         }
@@ -39,7 +39,7 @@ class ResendOTPViewTests(APITestCase):
         cache.clear()
 
     def create_mock_recaptcha_response(
-        self, valid=True, reason=0, action="resend-otp", score=0.9
+        self, valid=True, reason=0, action="request-password-change", score=0.9
     ):
         """Helper to build a mock Google reCAPTCHA Enterprise response object."""
         mock_response = MagicMock()
@@ -55,32 +55,38 @@ class ResendOTPViewTests(APITestCase):
     # REQUEST SERIALIZER VALIDATION FAILURE (400)
     # ==========================================
 
-    def test_missing_pre_auth_token(self):
-        """Test 400 bad request when pre auth token is missing."""
+    def test_missing_email_or_username(self):
+        """Test 400 bad request when email or username is missing."""
         payload = self.valid_payload.copy()
-        del payload["pre_auth_token"]
+        del payload["email_or_username"]
 
         response = self.client.post(self.url, payload, format="json", **self.headers)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("pre_auth_token", response.data)
-        self.assertEqual(response.data["pre_auth_token"][0], "Token is required.")
+        self.assertIn("email_or_username", response.data)
+        self.assertEqual(
+            response.data["email_or_username"][0], "Email or username is required."
+        )
 
-        payload["pre_auth_token"] = None
-
-        response = self.client.post(self.url, payload, format="json", **self.headers)
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("pre_auth_token", response.data)
-        self.assertEqual(response.data["pre_auth_token"][0], "Token is required.")
-
-        payload["pre_auth_token"] = ""
+        payload["email_or_username"] = None
 
         response = self.client.post(self.url, payload, format="json", **self.headers)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("pre_auth_token", response.data)
-        self.assertEqual(response.data["pre_auth_token"][0], "Token is required.")
+        self.assertIn("email_or_username", response.data)
+        self.assertEqual(
+            response.data["email_or_username"][0], "Email or username is required."
+        )
+
+        payload["email_or_username"] = ""
+
+        response = self.client.post(self.url, payload, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email_or_username", response.data)
+        self.assertEqual(
+            response.data["email_or_username"][0], "Email or username is required."
+        )
 
     def test_missing_recaptcha_token(self):
         """Test 400 bad request when recaptcha_token is missing."""
@@ -219,7 +225,7 @@ class ResendOTPViewTests(APITestCase):
         """Test 403 when Google score is below the 0.7 threshold."""
         mock_client_instance = mock_client_class.return_value
         mock_response = self.create_mock_recaptcha_response(
-            valid=True, action="resend-otp", score=0.3
+            valid=True, action="request-password-change", score=0.3
         )
         mock_client_instance.create_assessment.return_value = mock_response
 
@@ -253,7 +259,7 @@ class ResendOTPViewTests(APITestCase):
     # CSRFTOKEN FAILURE TEST
     # ==========================================
 
-    def test_resend_otp_fails_when_csrf_token_is_missing(self):
+    def test_request_change_password_fails_when_csrf_token_is_missing(self):
         """Ensure the view rejects requests completely if CSRF is absent."""
         csrf_less_headers = {
             "HTTP_USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -267,38 +273,15 @@ class ResendOTPViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
-class ResendOTPViewDBTests(APITestCase):
+class ReqChangePasswordViewDBTests(APITestCase):
 
     def setUp(self):
         self.client = APIClient(enforce_csrf_checks=True)
 
-        self.url = reverse("resend-otp")
+        self.url = reverse("req-change-password")
 
-        self.user = User.objects.create_user(
-            email="defaultuser@example.com",
-            password="SecurePassword123!",
-        )
-
-        prefix = "pre-auth-otp"
-        self.cache_obj = {
-            "user_id": self.user.id,
-            "otp": "123456",
-        }
-
-        encrypt_obj = encrypt_data(self.cache_obj)
-
-        self.pre_auth_token_key = f"{prefix}:{encrypt_obj['hashed_key']}"
-        cache.set(
-            self.pre_auth_token_key,
-            encrypt_obj["encrypted_data"],
-            timeout=settings.PRE_AUTH_OTP_TTL,
-        )
-
-        self.user_lock_key = f"{prefix}-cooldown:{generate_hash_key(self.user.id)}"
-
-        self.pre_auth_token = str(encrypt_obj["token"])
         self.valid_payload = {
-            "pre_auth_token": self.pre_auth_token,
+            "email_or_username": "defaultuser@example.com",
             "recaptcha_token": "mock_token_123",
             "recaptcha_version": "v3",
         }
@@ -313,12 +296,21 @@ class ResendOTPViewDBTests(APITestCase):
             "HTTP_X_CSRFTOKEN": token,
         }
 
+        self.user = User.objects.create_user(
+            email="defaultuser@example.com",
+            username="defaultuser",
+            password="SecurePassword123!",
+            auth_provider="email",
+            is_email_verified=True,
+            is_active=True,
+        )
+
     def tearDown(self):
         User.objects.all().delete()
         cache.clear()
 
     def create_mock_recaptcha_response(
-        self, valid=True, reason=0, action="resend-otp", score=0.9
+        self, valid=True, reason=0, action="request-password-change", score=0.9
     ):
         """Helper to build a mock Google reCAPTCHA Enterprise response object."""
         mock_response = MagicMock()
@@ -334,50 +326,123 @@ class ResendOTPViewDBTests(APITestCase):
     # SUCCESS TESTS (200)
     # ==========================================
 
+    @patch("server.utils.email.dispatch_email.delay")
     @patch(
         "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
     )
-    def test_resend_otp_success(self, mock_recaptcha):
-        """Test resend OTP with valid pre-auth token. Returns a new pre-auth token."""
+    def test_request_change_password_success(self, mock_recaptcha, mock_dispatch_email):
+        """Test that a user with 2FA enabled receives an OTP payload and resets failure cache."""
         mock_recaptcha.return_value.create_assessment.return_value = (
             self.create_mock_recaptcha_response()
         )
+
+        user_lock_hash = generate_hash_key(self.user.id)
+        user_lock_key = f"change-password-cooldown:{user_lock_hash}"
+
+        response1 = self.client.post(
+            self.url, self.valid_payload, format="json", **self.headers
+        )
+
+        pass_token_hash = generate_hash_key(response1.data["pass_token"])
+        pass_token_key = f"change-password:{pass_token_hash}"
+        self.assertEqual(response1.status_code, status.HTTP_200_OK)
+        self.assertIn("pass_token", response1.data)
+        self.assertTrue(cache.get(pass_token_key))
+        self.assertTrue(cache.get(user_lock_key))
+
+        self.assertTrue(mock_dispatch_email.called)
+        self.assertEqual(mock_dispatch_email.call_count, 1)
+        called_args, _ = mock_dispatch_email.call_args
+        email_context = called_args[0]
+        self.assertEqual(email_context["user_email"], self.user.email)
+        self.assertEqual(email_context["username"], self.user.username)
+        self.assertIsNotNone(email_context["action_url"])
+        self.assertIsNotNone(email_context["action_button_text"])
+
+        cache.delete(user_lock_key)
+
+        self.valid_payload["email_or_username"] = "defaultuser"
+
+        response2 = self.client.post(
+            self.url, self.valid_payload, format="json", **self.headers
+        )
+
+        self.assertEqual(response2.status_code, status.HTTP_200_OK)
+        self.assertIn("pass_token", response2.data)
+        self.assertTrue(cache.get(user_lock_key))
+
+    # ==========================================
+    # AUTHENTICATED USER STATE VALIDATION (403)
+    # ==========================================
+
+    @patch(
+        "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
+    )
+    def test_request_change_password_unverified_email_fails(self, mock_recaptcha):
+        """Test 403 forbidden when user has not verified their email address."""
+        mock_recaptcha.return_value.create_assessment.return_value = (
+            self.create_mock_recaptcha_response()
+        )
+
+        self.user.is_email_verified = False
+        self.user.save()
 
         response = self.client.post(
             self.url, self.valid_payload, format="json", **self.headers
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn("pre_auth_token", response.data)
-        self.assertNotEqual(response.data["pre_auth_token"], self.pre_auth_token)
-        self.assertFalse(cache.get(self.pre_auth_token_key))
-        self.assertTrue(cache.get(self.user_lock_key))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        error_msg = str(response.data["error"])
+        self.assertEqual(
+            error_msg,
+            "Email is not verified. You must verify your email first",
+        )
+
+    @patch(
+        "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
+    )
+    def test_request_change_password_deactivated_user_fails(self, mock_recaptcha):
+        """Test 403 forbidden when an explicitly deactivated user tries to log in."""
+        mock_recaptcha.return_value.create_assessment.return_value = (
+            self.create_mock_recaptcha_response()
+        )
+
+        self.user.is_active = False
+        self.user.save()
+
+        response = self.client.post(
+            self.url, self.valid_payload, format="json", **self.headers
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        error_msg = str(response.data["error"])
+        self.assertEqual(
+            error_msg,
+            "Account has been deactivated. Contact your admin",
+        )
 
     # ==========================================
-    # INVALID TESTS (403)
+    # NOT FOUND VALIDATION (404)
     # ==========================================
 
     @patch(
         "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
     )
-    def test_resend_otp_invalid_pre_auth_token_fails(self, mock_recaptcha):
-        """Test that an invalid/malformed pre-auth token returns 403 Forbidden."""
+    def test_request_change_password_missing_user_fails(self, mock_recaptcha):
+        """Test 404 not found when the user does not exist."""
         mock_recaptcha.return_value.create_assessment.return_value = (
             self.create_mock_recaptcha_response()
         )
 
-        invalid_payload = {
-            "pre_auth_token": "completely_invalid_or_expired_token",
-            "recaptcha_token": "mock_token_123",
-            "recaptcha_version": "v3",
-        }
+        self.valid_payload["email_or_username"] = "nonexistentuser"
 
         response = self.client.post(
-            self.url, invalid_payload, format="json", **self.headers
+            self.url, self.valid_payload, format="json", **self.headers
         )
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(response.data["error"], "Invalid Token")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        error_msg = str(response.data["error"])
+        self.assertEqual(error_msg, "User does not exist")
 
     # ==========================================
     # THROTTLING & RATE LIMIT WORKFLOW TESTS (429)
@@ -386,13 +451,17 @@ class ResendOTPViewDBTests(APITestCase):
     @patch(
         "server.utils.recaptcha.recaptchaenterprise_v1.RecaptchaEnterpriseServiceClient"
     )
-    def test_resend_otp_otp_cooldown_throttle_returns_429(self, mock_recaptcha):
-        """Test that OTPCooldownThrottle blocks a rapid subsequent resend otp attempt with a custom 429 message."""
+    def test_request_change_password_link_cooldown_throttle_returns_429(
+        self, mock_recaptcha
+    ):
+        """Test that OTPCooldownThrottle blocks a rapid subsequent login attempt with a custom 429 message."""
         mock_recaptcha.return_value.create_assessment.return_value = (
             self.create_mock_recaptcha_response()
         )
 
-        cache.set(self.user_lock_key, True, timeout=settings.OTP_COOLDOWN_TTL)
+        user_lock_hash = generate_hash_key(self.user.id)
+        user_lock_key = f"change-password-cooldown:{user_lock_hash}"
+        cache.set(user_lock_key, True, timeout=settings.OTP_COOLDOWN_TTL)
 
         with patch("django.core.cache.cache.ttl", return_value=45, create=True):
             response = self.client.post(
@@ -405,4 +474,4 @@ class ResendOTPViewDBTests(APITestCase):
             response.data["error"],
             "Please wait 45 seconds before requesting another OTP.",
         )
-        self.assertTrue(cache.get(self.user_lock_key))
+        self.assertTrue(cache.get(user_lock_key))

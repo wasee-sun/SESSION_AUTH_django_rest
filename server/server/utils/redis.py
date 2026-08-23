@@ -17,30 +17,30 @@ def get_cache_data(prefix, token):
     }
 
 
-def set_cache_data(prefix, raw_cache_data, object_type, user_id=None):
+def set_cache_data(
+    prefix,
+    raw_cache_data,
+    object_type,
+    main_cache_ttl,
+    throttle_id=None,
+    cooldown_cache_ttl=None,
+):
     """Encrypt and store the cache data in Redis"""
 
     encrypt_obj = encrypt_data(raw_cache_data, object_type)
 
-    if prefix == "pre-auth-otp":
-        main_cache_timeout = settings.PRE_AUTH_OTP_TTL
-        cooldown_cache_timeout = settings.OTP_COOLDOWN_TTL
-    else:
-        main_cache_timeout = settings.LINK_EXPIRY_TTL
-        cooldown_cache_timeout = settings.LINK_COOLDOWN_TTL
-
     cache.set(
         f"{prefix}:{encrypt_obj["hashed_key"]}",
         encrypt_obj["encrypted_data"],
-        timeout=main_cache_timeout,
+        timeout=main_cache_ttl,
     )
 
-    if user_id:
-        user_lock_key = generate_hash_key(user_id)
+    if throttle_id:
+        user_lock_key = generate_hash_key(throttle_id)
         cache.set(
             f"{prefix}-cooldown:{user_lock_key}",
             True,
-            timeout=cooldown_cache_timeout,
+            timeout=cooldown_cache_ttl,
         )
 
     return str(encrypt_obj["token"])
